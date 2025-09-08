@@ -1,53 +1,45 @@
-FROM php:8.4-fpm-alpine
+FROM php:8.3-fpm
 
 # Set timezone to UTC
-RUN echo "UTC" > /etc/timezone
+RUN echo "UTC" > /etc/timezone && dpkg-reconfigure -f noninteractive tzdata
 
-# Install essential packages first
-RUN apk add --no-cache \
+# Update package lists
+RUN apt-get update
+
+# Install essential packages
+RUN apt-get install -y \
     zip \
     unzip \
-    openrc \
     curl \
     nano \
-    sqlite \
+    sqlite3 \
     nginx \
     supervisor \
-    git
-
-# Install development dependencies and libraries
-RUN apk add --no-cache \
-    $PHPIZE_DEPS \
-    linux-headers \
-    zlib-dev \
-    libjpeg-turbo-dev \
-    libpng-dev \
-    libxml2-dev \
-    libxml2 \
-    libxslt-dev \
-    libxslt \
-    bzip2-dev \
-    libzip-dev \
-    icu-dev \
-    icu-libs \
-    icu-data-full \
-    freetype-dev \
-    mysql-client \
-    mariadb-client \
-    mariadb-connector-c-dev \
-    dcron \
+    git \
+    cron \
     jpegoptim \
     pngquant \
-    optipng \
-    oniguruma-dev \
+    optipng
+
+# Install development dependencies and libraries
+RUN apt-get install -y \
+    build-essential \
+    zlib1g-dev \
+    libjpeg-dev \
+    libpng-dev \
+    libxml2-dev \
+    libxslt1-dev \
+    libbz2-dev \
+    libzip-dev \
+    libicu-dev \
+    libfreetype6-dev \
+    default-mysql-client \
+    libmariadb-dev \
+    libonig-dev \
     libwebp-dev \
     libavif-dev \
     autoconf \
-    g++ \
-    make
-
-# Fix for XML extension in PHP 8.4
-RUN apk add --no-cache libxml2 libxml2-dev
+    pkg-config
 
 # Configure and install PHP extensions
 RUN docker-php-ext-configure gd \
@@ -60,7 +52,7 @@ RUN docker-php-ext-configure gd \
     docker-php-ext-configure mysqli --with-mysqli=mysqlnd && \
     docker-php-ext-configure pdo_mysql --with-pdo-mysql=mysqlnd
 
-# Install PHP extensions with proper error handling
+# Install PHP extensions
 RUN docker-php-ext-install -j$(nproc) \
     mysqli \
     pdo \
@@ -76,24 +68,13 @@ RUN docker-php-ext-install -j$(nproc) \
     xml
 
 # Clean up development dependencies to reduce image size
-RUN apk del --no-cache \
-    $PHPIZE_DEPS \
+RUN apt-get remove -y \
+    build-essential \
     autoconf \
-    g++ \
-    make \
-    linux-headers
-
-# Keep only runtime dependencies
-RUN apk add --no-cache \
-    libxml2 \
-    libxslt \
-    icu-libs \
-    libjpeg-turbo \
-    libpng \
-    freetype \
-    libzip \
-    libwebp \
-    libavif
+    pkg-config && \
+    apt-get autoremove -y && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Verify PHP installation
 RUN php -v && php -m
@@ -111,16 +92,22 @@ COPY opcache.ini $PHP_INI_DIR/conf.d/
 COPY php.ini $PHP_INI_DIR/conf.d/
 
 # Set up Cron and Supervisor
-RUN echo '*  *  *  *  * /usr/local/bin/php /var/www/artisan schedule:run >> /dev/null 2>&1' > /etc/crontabs/root && \
-    mkdir -p /etc/supervisor.d
+RUN echo '*  *  *  *  * /usr/local/bin/php /var/www/artisan schedule:run >> /dev/null 2>&1' | crontab - && \
+    mkdir -p /etc/supervisor/conf.d && \
+    mkdir -p /var/run && \
+    chmod 755 /var/run
 
 # Copy configuration files
-ADD master.ini /etc/supervisor.d/
-ADD default.conf /etc/nginx/conf.d/
-ADD nginx.conf /etc/nginx/
+COPY master.ini /etc/supervisor/conf.d/
+COPY default.conf /etc/nginx/sites-available/default
+COPY nginx.conf /etc/nginx/
+
+# Enable nginx site and remove default
+RUN rm -f /etc/nginx/sites-enabled/default && \
+    ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/
 
 # Set working directory
 WORKDIR /var/www/
 
 # Set the default command to start supervisord
-CMD ["/usr/bin/supervisord"]
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
